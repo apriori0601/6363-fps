@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+    <!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8" />
@@ -4746,7 +4746,7 @@
                 if (p.slot === mySlot) return;
                 const ally = p.team === myTeam;
                 // 아군은 파란 윤곽선 + 벽 뒤에서도 보이는 이름표, 적은 설정한 윤곽선 색만 (닉네임/이름표 없음)
-                const rec = ally ? buildRemoteRec(p.name, '#42a5f5', true, 0x42a5f5) : buildRemoteRec(p.name, null, false, undefined);
+                const rec = ally ? buildRemoteRec(p.name, '#42a5f5', true, 0x42a5f5) : buildRemoteRec(p.name, '#ef5350', false, undefined);
                 rec.slot = p.slot;
                 rec.team = p.team;
                 rec.idx = p.idx;
@@ -6109,7 +6109,7 @@
         heal:    { name: '응급 처치',   tag: '재생', charges: 1, recharge: 45000,
                    desc: 'E로 붕대를 감아 3초 동안 체력을 35 회복합니다. 맞으면 회복이 끊기고, 피해를 입은 직후 2초 동안은 쓸 수 없습니다. 쓰는 동안 상대 화면에 초록빛이 보입니다.', meta: '1회 · 쓰면 45초 뒤 다시 충전' },
         scan:    { name: '스캔',       tag: '탐지', charges: 1, recharge: 30000,
-                   desc: 'E로 쓰면 3초 동안 30m 안의 적이 벽 너머로 보입니다. 쓰는 순간 내 위치에 파동이 퍼져 상대 화면에도 표시됩니다.', meta: '1회 · 쓰면 30초 뒤 다시 충전' },
+                   desc: 'E로 쓰면 3초 동안 30m 안의 적 중 벽에 가려진 부분이 청록색으로 보입니다. (그냥 보이는 부분은 평소 모습 그대로) 쓰는 순간 내 위치에 파동이 퍼져 상대 화면에도 표시됩니다.', meta: '1회 · 쓰면 30초 뒤 다시 충전' },
         dash:    { name: '대시',       tag: '질풍', charges: 2,
                    desc: '누르고 있는 방향(WASD)으로 순간 돌진합니다. 아무 방향도 안 누르면 앞으로 돌진합니다.', meta: '2회 · 다 쓰면 20초 뒤 다시 충전' },
         para:    { name: '파라노이아', tag: '암영', charges: 2,
@@ -7387,36 +7387,52 @@
         if (healState && Number(dmgRaw) > 0) { healState = null; showToast('회복이 끊겼습니다!'); }
     });
 
-    // 스캔: 적 캐릭터의 윤곽선을 깊이 검사 없이 그려서 벽 너머로도 보이게 함 (나에게만 보임)
-    function enemyOutlineSets() {
+    // 스캔: 벽에 가려진 적의 몸만 청록색으로 겹쳐 그림 (가려지지 않고 그냥 보이는 부분은 평소 모습 그대로)
+    // 적 몸 부위와 같은 모양의 조금 큰 껍데기를 "이미 그려진 것보다 뒤에 있는 부분에만 그리는"(GreaterDepth) 방식으로 그리면
+    // 벽에 가려진 부분에서만 보임. 나에게만 보이는 효과
+    let xrayMat = null;
+    function xrayPartsOf(charGroup) {
+        const parts = [];
+        if (!charGroup || !charGroup.children) return parts;
+        charGroup.children.forEach(ch => { if (ch && ch.userData && ch.userData.damage && ch.geometry) parts.push(ch); });
+        return parts;
+    }
+    function xrayMeshOf(part) {
+        if (!part.userData._xr) {
+            if (!xrayMat) xrayMat = new THREE.MeshBasicMaterial({ color: SCAN_COLOR, transparent: true, opacity: 0.85, depthTest: true, depthWrite: false, depthFunc: THREE.GreaterDepth });
+            const m = new THREE.Mesh(part.geometry, xrayMat);
+            m.scale.setScalar(1.04);
+            m.renderOrder = 999;
+            m.visible = false;
+            part.add(m);
+            part.userData._xr = m;
+        }
+        return part.userData._xr;
+    }
+    function setXray(parts, on) {
+        parts.forEach(p => {
+            const m = on ? xrayMeshOf(p) : p.userData._xr;
+            if (m && m.visible !== on) m.visible = on;
+        });
+    }
+    function enemyXraySets() {
         const list = [];
         if (trainingMode) {
-            trainTargets.forEach(tg => { if (!tg.dead) list.push({ pos: tg.rec.mesh.position, outlines: tg.rec.outlines }); });
+            trainTargets.forEach(tg => { if (!tg.dead) list.push({ pos: tg.rec.mesh.position, parts: xrayPartsOf(tg.rec.mesh) }); });
         } else if (teamMode) {
             Object.keys(teamPlayers).forEach(k => {
                 const r = teamPlayers[k];
-                if (r && r.alive && r.has && r.team !== myTeam) list.push({ pos: r.mesh.position, outlines: r.outlines });
+                if (r && r.alive && r.has && r.team !== myTeam) list.push({ pos: r.mesh.position, parts: xrayPartsOf(r.mesh) });
             });
         } else if (enemyMesh) {
-            list.push({ pos: enemyMesh.position, outlines: enemyOutlineMeshes });
+            list.push({ pos: enemyMesh.position, parts: xrayPartsOf(enemyMesh) });
         }
         return list;
     }
 
-    function litOutlines(outlines, on) {
-        outlines.forEach(o => {
-            if (!o || !o.material || !!o.userData._lit === on) return;
-            o.userData._lit = on;
-            if (on) { o.userData._col = o.material.color.getHex(); o.material.color.setHex(SCAN_COLOR); }
-            else if (o.userData._col !== undefined) o.material.color.setHex(o.userData._col);
-            o.material.depthTest = !on;
-            o.renderOrder = on ? 999 : 0;
-        });
-    }
-
     function clearScanNow() {
         scanEnd = 0;
-        scanLit.forEach(s => litOutlines(s, false));
+        scanLit.forEach(parts => setXray(parts, false));
         scanLit = [];
     }
 
@@ -7424,12 +7440,12 @@
         const active = scanEnd > now && gameActive && !isRoundEnded && !isSpectating && !(teamMode && amDead);
         if (!active) { if (scanLit.length || scanEnd) clearScanNow(); return; }
         const keep = [];
-        enemyOutlineSets().forEach(e => {
+        enemyXraySets().forEach(e => {
             const near = camera.position.distanceTo(e.pos) <= SCAN_RANGE;
-            litOutlines(e.outlines, near);
-            if (near) keep.push(e.outlines);
+            setXray(e.parts, near);
+            if (near) keep.push(e.parts);
         });
-        scanLit.forEach(s => { if (keep.indexOf(s) < 0) litOutlines(s, false); });
+        scanLit.forEach(parts => { if (keep.indexOf(parts) < 0) setXray(parts, false); });
         scanLit = keep;
     }
 
@@ -8626,7 +8642,7 @@
     function addDmPlayer(p) {
         if (!p || p.slot === mySlot || teamPlayers[p.slot]) return;
         teamRoster.push({ slot: p.slot, name: p.name, team: p.slot, idx: p.slot });
-        const rec = buildRemoteRec(p.name, null, false, undefined);
+        const rec = buildRemoteRec(p.name, '#ef5350', false, undefined);
         rec.slot = p.slot; rec.team = p.slot; rec.idx = p.slot;
         rec.mesh.position.set(0, -60, 0);                 // 첫 위치 패킷을 받기 전에는 맵 밖에 숨겨 둠
         teamPlayers[p.slot] = rec;
@@ -9347,6 +9363,371 @@ try {
     });
 } catch (err) {
     console.warn('[1대1 점수 패치] 적용 중 오류 (게임은 그대로 동작합니다):', err);
+}
+})();
+</script>
+
+<script>
+/* =====================================================================
+   패치: 치장품 상점 (머리 장식) + 상대 닉네임 표시
+   - 메인 메뉴의 "치장품 상점"에서 문제를 풀어 골드를 벌고, 골드로 머리 치장품을 삼
+   - 장착한 치장품은 1대1 / 팀전 / 데스매치 / 관전에서 다른 사람 화면에 보임 (내 화면은 1인칭이라 안 보임 - 상점 미리보기로 확인)
+   - 문제 출제, 정답 확인, 골드 계산, 구매는 모두 서버가 함
+   - 문제가 생기면 이 스크립트 덩어리만 통째로 지우면 원래대로 돌아갑니다.
+   ===================================================================== */
+(function () {
+try {
+    const $ = (id) => document.getElementById(id);
+    const ICONS = { cap: '🧢', bunny: '🐰', horns: '😈', wizard: '🧙', halo: '😇', crown: '👑' };
+    let cos = { gold: 0, owned: [], equipped: '', catalog: [], reward: 40 };
+    let previewId = '';
+    let quiz = null;          // 지금 풀고 있는 문제 { type, choices }
+    let selectedChoice = 0;
+    let busyQuiz = false;
+
+    // ===== 치장품 3D 모델: 캐릭터 머리(높이 1.6, 반지름 0.35) 위에 얹음. 정면은 -z =====
+    function makeCosmeticMesh(id) {
+        const g = new THREE.Group();
+        const std = (c, o) => new THREE.MeshStandardMaterial(Object.assign({ color: c, roughness: 0.6, metalness: 0.1 }, o || {}));
+        const add = (geo, mat, x, y, z, rx, ry, rz) => {
+            const m = new THREE.Mesh(geo, mat);
+            m.position.set(x, y, z);
+            if (rx || ry || rz) m.rotation.set(rx || 0, ry || 0, rz || 0);
+            m.castShadow = true;
+            g.add(m);
+            return m;
+        };
+        if (id === 'cap') {                                   // 야구 모자
+            const red = std(0xd32f2f);
+            add(new THREE.SphereGeometry(0.385, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), red, 0, 1.62, 0);
+            add(new THREE.BoxGeometry(0.42, 0.03, 0.3), red, 0, 1.64, -0.42);
+            add(new THREE.SphereGeometry(0.04, 8, 8), std(0xffffff), 0, 2.0, 0);
+        } else if (id === 'wizard') {                         // 마법사 모자
+            const purple = std(0x5e35b1);
+            add(new THREE.CylinderGeometry(0.56, 0.56, 0.03, 24), purple, 0, 1.84, 0);
+            add(new THREE.ConeGeometry(0.3, 0.78, 20), purple, 0, 2.22, 0);
+            add(new THREE.CylinderGeometry(0.305, 0.31, 0.08, 20), std(0xffd54f), 0, 1.9, 0);
+            add(new THREE.SphereGeometry(0.05, 8, 8), std(0xffd54f, { emissive: 0x665500 }), 0, 2.62, 0);
+        } else if (id === 'horns') {                          // 악마 뿔
+            const hornMat = std(0xb71c1c, { emissive: 0x330000 });
+            add(new THREE.ConeGeometry(0.08, 0.34, 10), hornMat, 0.2, 1.98, -0.02, 0, 0, -0.45);
+            add(new THREE.ConeGeometry(0.08, 0.34, 10), hornMat, -0.2, 1.98, -0.02, 0, 0, 0.45);
+        } else if (id === 'halo') {                           // 천사 고리
+            add(new THREE.TorusGeometry(0.3, 0.035, 8, 28), new THREE.MeshBasicMaterial({ color: 0xffe066 }), 0, 2.22, 0, Math.PI / 2, 0, 0);
+        } else if (id === 'crown') {                          // 왕관
+            const gold = std(0xffc107, { metalness: 0.7, roughness: 0.3, side: THREE.DoubleSide });
+            add(new THREE.CylinderGeometry(0.3, 0.33, 0.16, 16, 1, true), gold, 0, 2.03, 0);
+            for (let i = 0; i < 6; i++) {
+                const a = i / 6 * Math.PI * 2;
+                add(new THREE.ConeGeometry(0.06, 0.2, 6), gold, Math.sin(a) * 0.3, 2.2, Math.cos(a) * 0.3);
+            }
+            add(new THREE.SphereGeometry(0.045, 8, 8), std(0xe53935, { emissive: 0x550000 }), 0, 2.03, -0.325);
+        } else if (id === 'bunny') {                          // 토끼 귀
+            const white = std(0xf5f5f5), pink = std(0xf8a5c2);
+            [-1, 1].forEach(s => {
+                const ear = new THREE.Group();
+                const outer = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.55, 10), white);
+                const top = new THREE.Mesh(new THREE.SphereGeometry(0.075, 10, 8), white);
+                top.position.y = 0.275;
+                const inner = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.42, 8), pink);
+                inner.position.set(0, 0, -0.045);
+                ear.add(outer); ear.add(top); ear.add(inner);
+                ear.position.set(s * 0.14, 2.25, 0);
+                ear.rotation.z = -s * 0.16;
+                ear.children.forEach(c => { c.castShadow = true; });
+                g.add(ear);
+            });
+        } else {
+            return null;
+        }
+        return g;
+    }
+
+    // 캐릭터 그룹(발이 원점, 머리 높이 1.6)에 치장품을 얹거나 바꿈 (id 가 비어 있으면 벗김)
+    function setCosmetic(charGroup, id) {
+        if (!charGroup || !charGroup.userData) return;
+        if (charGroup.userData.cosGroup) {
+            charGroup.remove(charGroup.userData.cosGroup);
+            charGroup.userData.cosGroup = null;
+        }
+        if (!id) return;
+        const m = makeCosmeticMesh(id);
+        if (!m) return;
+        charGroup.add(m);
+        charGroup.userData.cosGroup = m;
+    }
+
+    // ===== 다른 사람 화면에 치장품 적용 =====
+    let oppCos = '';
+    socket.on('opponentName', (d) => { oppCos = (d && d.cos) || ''; });
+    socket.on('gameStart', () => { if (typeof enemyMesh !== 'undefined' && enemyMesh) setCosmetic(enemyMesh, oppCos); });
+    function applyToPlayers(list) {
+        (list || []).forEach(p => {
+            const r = p && teamPlayers[p.slot];
+            if (r && p.cos) setCosmetic(r.mesh, p.cos);
+        });
+    }
+    socket.on('teamGameStart', (d) => applyToPlayers(d && d.players));
+    socket.on('dmStart', (d) => applyToPlayers(d && d.players));
+    socket.on('dmPlayerJoined', (d) => { if (d && d.cos) applyToPlayers([d]); });
+    socket.on('spectateStart', (d) => {
+        ((d && d.cos) || []).forEach((c, i) => { const p = specPlayers[i]; if (p && c) setCosmetic(p.mesh, c); });
+    });
+
+    // ===== 상점 화면 =====
+    const st = document.createElement('style');
+    st.textContent = `
+        #cos-modal .modal-card { width: 780px; max-width: calc(100vw - 24px); max-height: calc(100vh - 24px); overflow-y: auto; text-align: left; }
+        #cos-modal .cos-top { display: flex; align-items: center; gap: 12px; }
+        #cos-modal .cos-top h2 { flex: 1; margin: 0; }
+        #cos-gold-box { font-size: 20px; font-weight: 800; color: #ffd54f; white-space: nowrap; }
+        #cos-main { display: flex; gap: 16px; flex-wrap: wrap; }
+        #cos-preview-wrap { flex: 0 0 240px; text-align: center; }
+        #cos-preview { width: 240px; height: 240px; background: radial-gradient(circle at 50% 40%, rgba(0,229,199,0.18), rgba(10,14,22,0.9)); border: 1px solid var(--line); display: block; }
+        #cos-preview-name { margin-top: 6px; font-size: 14px; color: #cfd8e3; min-height: 20px; }
+        #cos-grid { flex: 1; min-width: 300px; display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; align-content: start; }
+        .cos-card { padding: 10px 8px 8px; text-align: center; border: 1px solid var(--line); background: rgba(255,255,255,0.04); cursor: pointer; transition: 0.12s; }
+        .cos-card:hover { border-color: var(--accent); background: rgba(0,229,199,0.08); }
+        .cos-card.sel { border-color: var(--accent); box-shadow: 0 0 10px rgba(0,229,199,0.3); }
+        .cos-card .cos-ico { font-size: 34px; line-height: 1.3; }
+        .cos-card .cos-nm { font-weight: 800; margin: 2px 0 6px; }
+        .cos-card .mini-btn { width: 100%; padding: 6px 4px; font-size: 14px; }
+        .cos-card.eq { border-color: #ffd54f; }
+        #cos-quiz-box { border: 1px solid var(--line); background: rgba(255,255,255,0.03); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+        #cos-quiz-prompt { font-size: 15px; line-height: 1.5; color: #dff7f4; background: rgba(0,0,0,0.3); padding: 10px; display: none; }
+        #cos-quiz-choices { display: none; flex-direction: column; gap: 6px; }
+        #cos-quiz-input { display: none; }
+        #cos-quiz-row { display: flex; gap: 8px; }
+        #cos-quiz-row .btn { flex: 1; padding: 9px; font-size: 15px; }
+    `;
+    document.head.appendChild(st);
+
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'cos-modal';
+    modal.innerHTML =
+        '<div class="modal-card">' +
+        '  <div class="cos-top"><h2>치장품 상점</h2><div id="cos-gold-box">🪙 <span id="cos-gold">0</span></div></div>' +
+        '  <div id="cos-main">' +
+        '    <div id="cos-preview-wrap"><canvas id="cos-preview"></canvas><div id="cos-preview-name"></div></div>' +
+        '    <div id="cos-grid"></div>' +
+        '  </div>' +
+        '  <div id="cos-quiz-box">' +
+        '    <div class="friend-section-title" style="margin:0;">문제를 풀어 골드 받기 (정답 하나당 🪙 <span id="cos-reward">40</span>)</div>' +
+        '    <div id="cos-quiz-prompt"></div>' +
+        '    <div id="cos-quiz-choices"></div>' +
+        '    <input type="text" id="cos-quiz-input" placeholder="정답 입력" />' +
+        '    <div class="auth-status" id="cos-status"></div>' +
+        '    <div id="cos-quiz-row"><button type="button" class="btn btn-primary" id="cos-quiz-get">문제 받기</button><button type="button" class="btn" id="cos-quiz-submit" style="display:none;">제출</button></div>' +
+        '  </div>' +
+        '  <button type="button" class="btn btn-red" id="cos-close">닫기</button>' +
+        '</div>';
+    document.body.appendChild(modal);
+
+    function setStatus(text, ok) {
+        const el = $('cos-status');
+        el.style.color = ok ? '#69f0ae' : '#ff8a80';
+        el.innerText = text || '';
+    }
+    function itemOf(id) { return cos.catalog.find(c => c.id === id); }
+
+    function renderShop() {
+        $('cos-gold').textContent = cos.gold;
+        $('cos-reward').textContent = cos.reward;
+        const grid = $('cos-grid');
+        grid.innerHTML = '';
+        cos.catalog.forEach(item => {
+            const owned = cos.owned.indexOf(item.id) !== -1;
+            const eq = cos.equipped === item.id;
+            const card = document.createElement('div');
+            card.className = 'cos-card' + (previewId === item.id ? ' sel' : '') + (eq ? ' eq' : '');
+            const ico = document.createElement('div'); ico.className = 'cos-ico'; ico.textContent = ICONS[item.id] || '🎩';
+            const nm = document.createElement('div'); nm.className = 'cos-nm'; nm.textContent = item.name;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'mini-btn';
+            if (eq) { btn.textContent = '장착 중 (벗기)'; btn.onclick = (e) => { e.stopPropagation(); socket.emit('cosEquip', { id: '' }); }; }
+            else if (owned) { btn.textContent = '장착'; btn.onclick = (e) => { e.stopPropagation(); socket.emit('cosEquip', { id: item.id }); }; }
+            else {
+                btn.textContent = '🪙 ' + item.price + ' 구매';
+                btn.disabled = cos.gold < item.price;
+                btn.onclick = (e) => { e.stopPropagation(); socket.emit('cosBuy', { id: item.id }); };
+            }
+            card.appendChild(ico); card.appendChild(nm); card.appendChild(btn);
+            card.onclick = () => { previewId = item.id; renderShop(); updatePreview(); };
+            grid.appendChild(card);
+        });
+        updatePreview();
+    }
+
+    // ===== 3D 미리보기 (내 화면은 1인칭이라 치장품이 안 보이므로 여기서 확인) =====
+    let pv = null;
+    function ensurePreview() {
+        if (pv) return pv;
+        const canvas = $('cos-preview');
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 50);
+        camera.position.set(0, 2.0, 3.6);
+        camera.lookAt(0, 1.85, 0);
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+        renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+        renderer.setSize(240, 240, false);
+        scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 0.95));
+        const dl = new THREE.DirectionalLight(0xffffff, 0.9);
+        dl.position.set(2, 4, 3);
+        scene.add(dl);
+        const holder = new THREE.Group();
+        const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 20, 16), new THREE.MeshStandardMaterial({ color: 0xff1744, roughness: 0.7 }));
+        head.position.y = 1.6;
+        const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.9, 0.4), new THREE.MeshStandardMaterial({ color: 0x00e676, roughness: 0.7 }));
+        body.position.y = 0.85;
+        holder.add(head); holder.add(body);
+        scene.add(holder);
+        pv = { scene, camera, renderer, holder, raf: 0 };
+        return pv;
+    }
+    function previewLoop(t) {
+        if (!pv) return;
+        pv.raf = requestAnimationFrame(previewLoop);
+        pv.holder.rotation.y = t / 1600;
+        pv.renderer.render(pv.scene, pv.camera);
+    }
+    function startPreview() {
+        try { ensurePreview(); } catch (e) { console.warn('[치장품 패치] 미리보기를 만들지 못했습니다:', e); pv = null; return; }
+        cancelAnimationFrame(pv.raf);
+        pv.raf = requestAnimationFrame(previewLoop);
+        updatePreview();
+    }
+    function stopPreview() { if (pv) { cancelAnimationFrame(pv.raf); pv.raf = 0; } }
+    function updatePreview() {
+        const nameEl = $('cos-preview-name');
+        const it = itemOf(previewId);
+        if (nameEl) nameEl.textContent = it ? it.name : '카드를 눌러 미리보기';
+        if (pv) setCosmetic(pv.holder, previewId);
+    }
+
+    // ===== 열기/닫기 =====
+    function openShop() {
+        if (!isLoggedIn) { showNotice('로그인한 계정만 이용할 수 있습니다.'); return; }
+        modal.style.display = 'flex';
+        setStatus('', true);
+        resetQuizUI();
+        socket.emit('cosGet');
+        startPreview();
+    }
+    function closeShop() {
+        modal.style.display = 'none';
+        stopPreview();
+        quiz = null;
+    }
+    $('cos-close').addEventListener('click', closeShop);
+
+    const menuBox = document.querySelector('.main-menu-box');
+    if (menuBox) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn account-only';
+        b.textContent = '치장품 상점';
+        b.addEventListener('click', openShop);
+        menuBox.appendChild(b);
+    }
+
+    socket.on('cosData', (d) => {
+        if (!d || !d.success) { setStatus((d && d.message) || '불러오지 못했습니다.', false); return; }
+        cos = { gold: d.gold | 0, owned: d.owned || [], equipped: d.equipped || '', catalog: d.catalog || [], reward: d.reward || 40 };
+        if (!previewId) previewId = cos.equipped || (cos.catalog[0] && cos.catalog[0].id) || '';
+        renderShop();
+    });
+    socket.on('cosActionResult', (d) => setStatus(d && d.message, !!(d && d.success)));
+
+    // ===== 문제 풀기 =====
+    function resetQuizUI() {
+        quiz = null;
+        busyQuiz = false;
+        $('cos-quiz-prompt').style.display = 'none';
+        $('cos-quiz-choices').style.display = 'none';
+        $('cos-quiz-input').style.display = 'none';
+        $('cos-quiz-submit').style.display = 'none';
+        $('cos-quiz-get').style.display = '';
+        $('cos-quiz-get').disabled = false;
+    }
+    $('cos-quiz-get').addEventListener('click', () => {
+        if (busyQuiz) return;
+        busyQuiz = true;
+        $('cos-quiz-get').disabled = true;
+        setStatus('문제를 불러오는 중...', true);
+        socket.emit('cosQuiz');
+    });
+    socket.on('cosQuizData', (d) => {
+        busyQuiz = false;
+        $('cos-quiz-get').disabled = false;
+        if (!d || !d.success) { setStatus((d && d.message) || '문제를 불러오지 못했습니다.', false); return; }
+        quiz = { type: d.type };
+        selectedChoice = 0;
+        setStatus('', true);
+        $('cos-quiz-prompt').textContent = d.prompt;
+        $('cos-quiz-prompt').style.display = 'block';
+        const box = $('cos-quiz-choices'), input = $('cos-quiz-input');
+        box.innerHTML = '';
+        if (d.type === 'short') {
+            box.style.display = 'none';
+            input.style.display = '';
+            input.value = '';
+            setTimeout(() => input.focus(), 0);
+        } else {
+            input.style.display = 'none';
+            box.style.display = 'flex';
+            (d.choices || []).forEach((text, k) => {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'quiz-choice-btn';
+                btn.textContent = (k + 1) + '. ' + text;
+                btn.onclick = () => {
+                    selectedChoice = k + 1;
+                    Array.from(box.children).forEach((c, ci) => c.classList.toggle('selected', ci === k));
+                };
+                box.appendChild(btn);
+            });
+        }
+        $('cos-quiz-get').style.display = 'none';
+        $('cos-quiz-submit').style.display = '';
+        $('cos-quiz-submit').disabled = false;
+    });
+    function submitQuiz() {
+        if (!quiz) return;
+        if (quiz.type === 'short') {
+            const v = $('cos-quiz-input').value.trim();
+            if (!v) { setStatus('정답을 입력하세요.', false); return; }
+            socket.emit('cosAnswer', { answer: v });
+        } else {
+            if (!selectedChoice) { setStatus('보기를 선택하세요.', false); return; }
+            socket.emit('cosAnswer', { choice: selectedChoice });
+        }
+        $('cos-quiz-submit').disabled = true;
+        setStatus('확인 중...', true);
+    }
+    $('cos-quiz-submit').addEventListener('click', submitQuiz);
+    $('cos-quiz-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitQuiz(); });
+    socket.on('cosAnswerResult', (d) => {
+        resetQuizUI();
+        if (!d || !d.success) { setStatus((d && d.message) || '처리하지 못했습니다.', false); return; }
+        if (d.correct) {
+            if (d.reward > 0) {
+                cos.gold = d.gold | 0;
+                $('cos-gold').textContent = cos.gold;
+                renderShop();
+                setStatus('정답! 🪙 +' + d.reward, true);
+            } else {
+                setStatus(d.message || '정답이지만 골드를 저장하지 못했습니다.', false);
+            }
+        } else {
+            setStatus('오답입니다. 다음 문제에 도전해 보세요!', false);
+        }
+    });
+
+    window.__cosTest = { makeCosmeticMesh, setCosmetic };  // (개발용) 모양 확인용 - 평소에는 쓰이지 않음
+} catch (err) {
+    console.warn('[치장품 패치] 적용 중 오류 (게임은 그대로 동작합니다):', err);
 }
 })();
 </script>
