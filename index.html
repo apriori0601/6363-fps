@@ -6109,7 +6109,7 @@
         heal:    { name: '응급 처치',   tag: '재생', charges: 1, recharge: 45000,
                    desc: 'E로 붕대를 감아 3초 동안 체력을 35 회복합니다. 맞으면 회복이 끊기고, 피해를 입은 직후 2초 동안은 쓸 수 없습니다. 쓰는 동안 상대 화면에 초록빛이 보입니다.', meta: '1회 · 쓰면 45초 뒤 다시 충전' },
         scan:    { name: '스캔',       tag: '탐지', charges: 1, recharge: 30000,
-                   desc: 'E로 쓰면 3초 동안 30m 안의 적 중 벽에 가려진 부분이 청록색으로 보입니다. (그냥 보이는 부분은 평소 모습 그대로) 쓰는 순간 내 위치에 파동이 퍼져 상대 화면에도 표시됩니다.', meta: '1회 · 쓰면 30초 뒤 다시 충전' },
+                   desc: 'E로 쓰면 3초 동안 30m 안의 적이 벽 너머로 보입니다. 쓰는 순간 내 위치에 파동이 퍼져 상대 화면에도 표시됩니다.', meta: '1회 · 쓰면 30초 뒤 다시 충전' },
         dash:    { name: '대시',       tag: '질풍', charges: 2,
                    desc: '누르고 있는 방향(WASD)으로 순간 돌진합니다. 아무 방향도 안 누르면 앞으로 돌진합니다.', meta: '2회 · 다 쓰면 20초 뒤 다시 충전' },
         para:    { name: '파라노이아', tag: '암영', charges: 2,
@@ -7387,52 +7387,36 @@
         if (healState && Number(dmgRaw) > 0) { healState = null; showToast('회복이 끊겼습니다!'); }
     });
 
-    // 스캔: 벽에 가려진 적의 몸만 청록색으로 겹쳐 그림 (가려지지 않고 그냥 보이는 부분은 평소 모습 그대로)
-    // 적 몸 부위와 같은 모양의 조금 큰 껍데기를 "이미 그려진 것보다 뒤에 있는 부분에만 그리는"(GreaterDepth) 방식으로 그리면
-    // 벽에 가려진 부분에서만 보임. 나에게만 보이는 효과
-    let xrayMat = null;
-    function xrayPartsOf(charGroup) {
-        const parts = [];
-        if (!charGroup || !charGroup.children) return parts;
-        charGroup.children.forEach(ch => { if (ch && ch.userData && ch.userData.damage && ch.geometry) parts.push(ch); });
-        return parts;
-    }
-    function xrayMeshOf(part) {
-        if (!part.userData._xr) {
-            if (!xrayMat) xrayMat = new THREE.MeshBasicMaterial({ color: SCAN_COLOR, transparent: true, opacity: 0.85, depthTest: true, depthWrite: false, depthFunc: THREE.GreaterDepth });
-            const m = new THREE.Mesh(part.geometry, xrayMat);
-            m.scale.setScalar(1.04);
-            m.renderOrder = 999;
-            m.visible = false;
-            part.add(m);
-            part.userData._xr = m;
-        }
-        return part.userData._xr;
-    }
-    function setXray(parts, on) {
-        parts.forEach(p => {
-            const m = on ? xrayMeshOf(p) : p.userData._xr;
-            if (m && m.visible !== on) m.visible = on;
-        });
-    }
-    function enemyXraySets() {
+    // 스캔: 적 캐릭터의 윤곽선을 깊이 검사 없이 그려서 벽 너머로도 보이게 함 (나에게만 보임)
+    function enemyOutlineSets() {
         const list = [];
         if (trainingMode) {
-            trainTargets.forEach(tg => { if (!tg.dead) list.push({ pos: tg.rec.mesh.position, parts: xrayPartsOf(tg.rec.mesh) }); });
+            trainTargets.forEach(tg => { if (!tg.dead) list.push({ pos: tg.rec.mesh.position, outlines: tg.rec.outlines }); });
         } else if (teamMode) {
             Object.keys(teamPlayers).forEach(k => {
                 const r = teamPlayers[k];
-                if (r && r.alive && r.has && r.team !== myTeam) list.push({ pos: r.mesh.position, parts: xrayPartsOf(r.mesh) });
+                if (r && r.alive && r.has && r.team !== myTeam) list.push({ pos: r.mesh.position, outlines: r.outlines });
             });
         } else if (enemyMesh) {
-            list.push({ pos: enemyMesh.position, parts: xrayPartsOf(enemyMesh) });
+            list.push({ pos: enemyMesh.position, outlines: enemyOutlineMeshes });
         }
         return list;
     }
 
+    function litOutlines(outlines, on) {
+        outlines.forEach(o => {
+            if (!o || !o.material || !!o.userData._lit === on) return;
+            o.userData._lit = on;
+            if (on) { o.userData._col = o.material.color.getHex(); o.material.color.setHex(SCAN_COLOR); }
+            else if (o.userData._col !== undefined) o.material.color.setHex(o.userData._col);
+            o.material.depthTest = !on;
+            o.renderOrder = on ? 999 : 0;
+        });
+    }
+
     function clearScanNow() {
         scanEnd = 0;
-        scanLit.forEach(parts => setXray(parts, false));
+        scanLit.forEach(s => litOutlines(s, false));
         scanLit = [];
     }
 
@@ -7440,12 +7424,12 @@
         const active = scanEnd > now && gameActive && !isRoundEnded && !isSpectating && !(teamMode && amDead);
         if (!active) { if (scanLit.length || scanEnd) clearScanNow(); return; }
         const keep = [];
-        enemyXraySets().forEach(e => {
+        enemyOutlineSets().forEach(e => {
             const near = camera.position.distanceTo(e.pos) <= SCAN_RANGE;
-            setXray(e.parts, near);
-            if (near) keep.push(e.parts);
+            litOutlines(e.outlines, near);
+            if (near) keep.push(e.outlines);
         });
-        scanLit.forEach(parts => { if (keep.indexOf(parts) < 0) setXray(parts, false); });
+        scanLit.forEach(s => { if (keep.indexOf(s) < 0) litOutlines(s, false); });
         scanLit = keep;
     }
 
